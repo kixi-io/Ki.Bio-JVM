@@ -17,7 +17,7 @@ let primer = .dna("GTAAAACGACGGCCAGT")
 say primer.reverseComplement()        // ACTGGCCGTCGTTTTAC
 say "GAYGG" in primer                 // true: IUPAC patterns, Y is C or T
 say primer.tm()                       // about 53.58°C (IDT's defaults: 50 mM Na+, 250 nM)
-say primer.tm(50mM, 2mM, 0.2mM, 250nM) // about 60.39°C in a PCR buffer
+say primer.tm(50mM, 250nM, 2mM, 0.2mM) // about 60.39°C in a PCR buffer (Na+, oligo, Mg2+, dNTPs)
 say .dna(ds circular "TTCAAAAAAAGAA").find("GAATTC")  // [11]: the site wraps the origin
 say translate("ATGGCCTAA")            // MA*
 say .protein("MQIFVKTLTGK").mass      // 1265.581Da
@@ -40,7 +40,8 @@ from o in oligos from p in plasmids where o.seq in p.seq or o.seq.reverseComplem
 - **Letters as written**, uppercased, 5' to 3' (N- to C-terminus): no canonical
   rotation or strand, so `==` compares the writing and `sameMolecule` asks the
   chemical question (the same circle from another origin, or the other strand of
-  a duplex). Whitespace is dropped; `seq(text)` also drops FASTA headers and
+  a duplex). A literal is letters only (either case, no spaces); the functions
+  read looser text: `dna(text)` drops whitespace, and `seq(text)` also drops FASTA headers and
   numbering and works out the kind.
 - **Alphabets**: DNA `ACGT`, RNA `ACGU`, both with the IUPAC codes
   `RYSWKMBDHVN`; protein the 20 amino acids, `U` (selenocysteine), `O`
@@ -55,14 +56,15 @@ from o in oligos from p in plasmids where o.seq in p.seq or o.seq.reverseComplem
 
 Members of every sequence: `text`, `kind`, `length`, `formula`, `mass`,
 `monoisotopicMass`, `digest`, `find`, `count`, `contains`, `slice`, `reverse`,
-`sameMolecule`. Of DNA and RNA: `ds`, `circular`, `gc` (percent), `complement`,
+`sameMolecule`. Of DNA and RNA: `ds`, `circular`, `gc` (percent of the bases known
+to be G/C or A/T, as Biopython's `gc_fraction`; nil when none is), `complement`,
 `reverseComplement`, `codons`, `translate(frame, code)`, `orfs(minLength, code)`,
 `orf`; DNA adds `transcribe` and `tm`, RNA `reverseTranscribe`. Of a protein:
 `pI`, `charge(pH)`, `extinction280`, `extinction280Reduced`.
 
 Functions: `dna(x)`, `rna(x)`, `protein(x)`, `seq(x, kind?)`, `revcomp`,
-`transcribe`, `translate(x, frame?, code?)`, `gc`, `tm(x, Na+?, Mg2+?, dNTPs?,
-oligo?)`, `pI`, `a260(absorbance, kind)` (µg/mL: 50 for dsDNA, 33 ssDNA, 40
+`transcribe`, `translate(x, frame?, code?)`, `gc`, `tm(x, Na+?, oligo?, Mg2+?,
+dNTPs?)`, `pI`, `a260(absorbance, kind)` (µg/mL: 50 for dsDNA, 33 ssDNA, 40
 RNA), `hamming`, `levenshtein`. Generic names (`length`, `count`, `find`,
 `reverse`, ...) are members only, so `use ki.bio.*` binds nothing a script is
 likely to define itself.
@@ -72,8 +74,9 @@ likely to define itself.
 - **Melting temperature** as IDT's OligoAnalyzer computes it: nearest-neighbor
   thermodynamics (Allawi and SantaLucia 1997; SantaLucia 1998) with the salt
   corrections of Owczarzy et al. 2004 (Na+) and 2008 (Mg2+, with dNTPs binding
-  it), at IDT's defaults of 50 mM Na+, 250 nM oligo and no Mg2+ or dNTPs. Plain
-  A, C, G and T, linear, at every length.
+  it), at IDT's defaults of 50 mM Na+, 250 nM oligo and no Mg2+ or dNTPs. The
+  oligo is taken to be in excess over its target, as IDT assumes (k is the oligo
+  concentration). Plain A, C, G and T, linear, at every length.
 - **Isoelectric point** as ExPASy's Compute pI/Mw finds it (Bjellqvist pKs,
   terminal residues included), by bisection to 0.0001.
 - **Extinction coefficient at 280 nm** (Pace et al. 1995): 5500 per Trp, 1490
@@ -83,7 +86,8 @@ likely to define itself.
   ends; a protein adds water; ambiguous letters have no mass.
 - **Genetic codes**: the 27 NCBI tables, by number (`translate(x, 1, 2)` reads
   frame 1 with the vertebrate mitochondrial code); an ambiguous codon
-  translates when every reading of it agrees (`TTY` is F), and is `X` otherwise.
+  translates when every reading of it agrees (`TTY` is F), as `B`, `Z` or `J`
+  when the readings are D or N, E or Q, I or L, and is `X` otherwise.
 
 Not yet: alignment, oligo modifications (5' phosphate, dyes), RNA duplex Tm,
 ε260, and lengths in bp, nt and aa units.
