@@ -32,18 +32,22 @@ class BioBagTest : FunSpec({
     }
 
     test("KD reads the literals, with ds and circular before a quoted string") {
-        val t = KD.read("""construct name="pUC-insert" insert=.dna(ds circular "ggatcc ATG AAA taa") primer=.dna(GTAAAACGACGGCCAGT) mrna=.rna("AUGGCC") p=.protein("mktay")""")
+        val t = KD.read("""construct name="pUC-insert" insert=.dna(ds circular "ggatccATGAAAtaa") primer=.dna(GTAAAACGACGGCCAGT) mrna=.rna("AUGGCC") p=.protein("mktay")""")
         t["insert"] shouldBe DNA("GGATCCATGAAATAA", ds = true, circular = true)
         t["primer"] shouldBe DNA("GTAAAACGACGGCCAGT")
         t["mrna"] shouldBe RNA("AUGGCC")
         t["p"] shouldBe Protein("MKTAY")
         t.toString() shouldContain "insert=.dna(ds circular \"GGATCCATGAAATAA\")"
         KD.read("t s=.dna(ds AC)")["s"] shouldBe DNA("AC", ds = true)
-        KD.read("t s=.dna(ds)")["s"] shouldBe DNA("DS")
         shouldThrow<Exception> { KD.read("t s=.dna(\"ACGU\")") }.message!! shouldContain "'U'"
         shouldThrow<Exception> { KD.read("t s=.protein(ds \"MKT\")") }.message!! shouldContain "no 'ds'"
         shouldThrow<Exception> { KD.read("t s=.dna(ds ds \"A\")") }.message!! shouldContain "twice"
         shouldThrow<Exception> { KD.read("t s=.dna(\"\")") }
+        // The literal is letters only (design 5.5): no spaces, and a flag is not a sequence.
+        shouldThrow<Exception> { KD.read("t s=.dna(\"ds AC\")") }.message!! shouldContain "without spaces"
+        shouldThrow<Exception> { KD.read("t s=.dna(ds)") }.message!! shouldContain "needs its letters"
+        KD.read("t s=.dna(\"DS\")")["s"] shouldBe DNA("DS")
+        DNA("ggatcc ATG") shouldBe DNA("GGATCCATG")                      // the constructor and dna(text) read looser text
     }
 
     test("KS: literals, members, functions and `in`") {
@@ -95,7 +99,19 @@ class BioBagTest : FunSpec({
             db.kq("from p in primers where \"ACGAC\" in p.seq select p.name").map { it["name"] }.toSet() shouldBe setOf("M13F", "T7")
             db.kq("from c in constructs where c.insert.kind == \"DNA\" select c.insert.translate(1).text as p").map { it["p"] } shouldBe listOf("GSMK*")
             db.kq("from p in primers where p.name == \"M13F\" select revcomp(p.seq) as rc").map { it["rc"] } shouldBe listOf(DNA("ACTGGCCGTCGTTTTAC"))
+            // A Sequence-typed attribute compares with a DNA literal (RevDB's checker relates a type to its subtypes).
+            db.kq("from c in constructs where c.insert == .dna(ds circular GGATCCATGAAATAA) select c.name").map { it["name"] } shouldBe listOf("a")
+            db.kq("from c in constructs where c.insert != .dna(ACGT) orderby c.name select c.name").map { it["name"] } shouldBe listOf("a", "b")
         }
+    }
+
+    test("gc: G, C and S over the bases known to be G/C or A/T, as Biopython's gc_fraction") {
+        DNA("GCAT").gc shouldBe 50.0
+        DNA("GCNN").gc shouldBe 100.0
+        DNA("SWNN").gc shouldBe 50.0
+        RNA("GGCU").gc shouldBe 75.0
+        DNA("NNNN").gc shouldBe null
+        ks("use ki.bio.*\nsay gc(.dna(\"NNRY\"))") shouldBe "nil"
     }
 
     test("strands: complement with IUPAC codes, transcription, reverse transcription") {
@@ -137,10 +153,13 @@ class BioBagTest : FunSpec({
     test("codons and translation: frames on both strands, ambiguous codons, other codes") {
         val s = DNA("ATGGCCATTGTAATGGGCCGCTGA")
         s.codons() shouldBe listOf("ATG", "GCC", "ATT", "GTA", "ATG", "GGC", "CGC", "TGA")
+        RNA("AUGGCCUAA").codons() shouldBe listOf("AUG", "GCC", "UAA")
+        RNA("AUGGCCUAA").codons(-1) shouldBe listOf("UUA", "GGC", "CAU")
         s.translate().letters shouldBe "MAIVMGR*"
         s.translate(-1).letters shouldBe "SAAHYNGH"
         DNA("GGNTAR").translate().letters shouldBe "G*"
         DNA("NNN").translate().letters shouldBe "X"
+        DNA("RAYSARMTHYAA").translate().letters shouldBe "BZJX"           // D or N, E or Q, I or L, Q or a stop (as Biopython)
         DNA("TGA").translate(1, 2).letters shouldBe "W"
         RNA("AUGUGA").translate().letters shouldBe "M*"
         shouldThrow<BioException> { s.translate(4) }.message!! shouldContain "frame"
@@ -160,6 +179,11 @@ class BioBagTest : FunSpec({
         plasmid.orfs(3).first().letters shouldBe "ATGAAAGGGTAG"
         DNA("GGGTAGCCCATGAAA").orfs(3).none { it.letters == "ATGAAAGGGTAG" } shouldBe true
         shouldThrow<BioException> { DNA("CCCCCC").orf() }
+        // On a circle each ATG is read on its own: an ORF from an earlier ATG that would be longer
+        // than the circle does not hide a shorter one from a later ATG to the same stop.
+        DNA("TAAATGATGATGAT", circular = true).orfs(3).map { it.letters } shouldBe listOf("ATGATTAAATGA")
+        DNA("CCATGAAATGATGATGG", circular = true).orfs(3, 27).first().letters shouldBe "ATGGCCATGAAATGA"
+        RNA("GGGUAGCCCAUGAAA", circular = true).orfs(3).first().letters shouldBe "AUGAAAGGGUAG"
     }
 
     test("masses from Ki.Sci formulas: oligos with a 5' hydroxyl, duplexes, circles, proteins") {
@@ -175,6 +199,7 @@ class BioBagTest : FunSpec({
         Protein("G").formula shouldBe Formula.parse("C2H5NO2")            // glycine
         Protein("GG*").formula shouldBe Formula.parse("C4H8N2O3")         // a final stop is ignored
         Protein("MK*V").formula shouldBe null
+        Protein("*").mass shouldBe null                                   // translate("TAA"): no residues
         DNA("ACGN").mass shouldBe null
         Protein("MKX").mass shouldBe null
         Protein("MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG").mass!!.value.toDouble() shouldBe (8564.84 plusOrMinus 0.05)   // ubiquitin, ExPASy 8564.84
@@ -189,12 +214,17 @@ class BioBagTest : FunSpec({
 
     test("Tm: IDT's defaults, conditions as quantities, refusals") {
         val t = DNA("GTAAAACGACGGCCAGT").tm().value.toDouble()
-        val salty = ks("say .dna(\"GTAAAACGACGGCCAGT\").tm(50mM, 2mM, 0.2mM, 250nM) > .dna(\"GTAAAACGACGGCCAGT\").tm()")
+        // The order is (Na+, oligo, Mg2+, dNTPs), RevGrid's tm(dna, salt, oligo) with the buffer after.
+        val salty = ks("say .dna(\"GTAAAACGACGGCCAGT\").tm(50mM, 250nM, 2mM, 0.2mM) > .dna(\"GTAAAACGACGGCCAGT\").tm()")
         salty shouldBe "true"
-        t shouldBe (DNA("GTAAAACGACGGCCAGT").tm(0.05, 0, 0, 250e-9).value.toDouble() plusOrMinus 1e-9)
+        t shouldBe (DNA("GTAAAACGACGGCCAGT").tm(0.05, 250e-9, 0, 0).value.toDouble() plusOrMinus 1e-9)
+        ks("use ki.bio.*\nsay tm(\"GTAAAACGACGGCCAGT\", 50mM, 250nM, 2mM, 0.2mM) == .dna(\"GTAAAACGACGGCCAGT\").tm(50mM, 250nM, 2mM, 0.2mM)") shouldBe "true"
+        shouldThrow<BioException> { DNA("ACGT").tm(0.05, 0) }.message!! shouldContain "oligo concentration must be more than 0"
+        shouldThrow<BioException> { DNA("ACGT").tm(0.05, -1e-9) }
+        DNA("GTAAAACGACGGCCAGT").tm(0, 250e-9, 0.002, 0).value.toDouble() shouldBe (61.13560696810322 plusOrMinus 1e-9)   // Mg2+ alone (Biopython 1.88)
         shouldThrow<BioException> { DNA("ACGN").tm() }.message!! shouldContain "'N'"
         shouldThrow<BioException> { DNA("ACGT", circular = true).tm() }
-        shouldThrow<BioException> { DNA("ACGT").tm(0, 0) }.message!! shouldContain "Na+"
+        shouldThrow<BioException> { DNA("ACGT").tm(0, 250e-9) }.message!! shouldContain "Na+ or Mg2+"
     }
 
     test("digest, sameMolecule, equality") {
@@ -231,6 +261,8 @@ class BioBagTest : FunSpec({
         Packing.encode(Protein("MKTAY")).size shouldBe 1 + 1 + 4
         shouldThrow<IllegalArgumentException> { Packing.decode(Packing.encode(DNA("ACGT")).dropLast(1).toByteArray(), 0) }
         shouldThrow<IllegalArgumentException> { Packing.decode(Packing.encode(DNA("ACGT")), 1) }
+        val kind3 = Packing.encode(DNA("ACGT")).also { it[0] = (it[0].toInt() or 3).toByte() }
+        shouldThrow<IllegalArgumentException> { Packing.decode(kind3, 3) }               // what Sequence's decode passes
         val padded = Packing.encode(DNA("ACG")).also { it[it.size - 1] = (it[it.size - 1].toInt() or 1).toByte() }
         shouldThrow<IllegalArgumentException> { Packing.decode(padded, 0) }
     }

@@ -155,8 +155,17 @@ public sealed class NucleicAcid(letters: String, public val ds: Boolean, final o
 
     internal abstract val isRna: Boolean
 
-    /** G + C as a percentage of the length (S, G or C, counts too), unrounded. */
-    public val gc: Double get() = letters.count { it == 'G' || it == 'C' || it == 'S' } * 100.0 / letters.length
+    /**
+     * G + C as a percentage of the bases that are known to be one or the other
+     * (G, C and S against A, T, U and W; N, R, Y and the other codes are left out,
+     * as Biopython's `gc_fraction` does by default), unrounded; null when there are
+     * none.
+     */
+    public val gc: Double? get() {
+        val strong = letters.count { it == 'G' || it == 'C' || it == 'S' }
+        val weak = letters.count { it == 'A' || it == 'T' || it == 'U' || it == 'W' }
+        return if (strong + weak == 0) null else strong * 100.0 / (strong + weak)
+    }
 
     /** The complementary strand, same direction; IUPAC codes complement too (R and Y, ...). */
     public fun complement(): NucleicAcid = with(complementLetters(letters))
@@ -182,7 +191,7 @@ public sealed class NucleicAcid(letters: String, public val ds: Boolean, final o
         val out = ArrayList<String>(strand.length / 3)
         var i = Math.abs(frame) - 1
         while (i + 3 <= strand.length) { out.add(strand.substring(i, i + 3)); i += 3 }
-        return out
+        return if (isRna) out.map { it.replace('T', 'U') } else out
     }
 
     /** The protein reading [frame] gives with the genetic [code] (an NCBI table number, 1 by default); stops are `*`. */
@@ -199,36 +208,51 @@ public sealed class NucleicAcid(letters: String, public val ds: Boolean, final o
     /**
      * Every open reading frame of at least [minLength] nucleotides (stop codon
      * included) on either strand, longest first: from an ATG to the next stop in
-     * frame (stops from the genetic [code]), the longest one for each stop, across
-     * the origin when circular. Each is a linear, single strand.
+     * frame (stops from the genetic [code]), the longest one for each stop. On a
+     * circular sequence frames run across the origin and an ORF is at most the
+     * circle's length. Each is a linear, single strand.
      */
     public fun orfs(minLength: Int = 100, code: Any? = null): List<NucleicAcid> {
         if (minLength < 3) throw BioException("An ORF is at least 3 nt, not $minLength")
         val gc = GeneticCodes.of(code)
         val n = letters.length
-        class Orf(val strand: Int, val start: Int, val end: Int, val text: String)
-        val best = HashMap<Long, Orf>()
+        if (n < 6) return emptyList()
+        class Orf(val strand: Int, val start: Int, val text: String)
+        val best = HashMap<Long, Orf>()   // the longest ORF for each strand and stop codon
         for ((si, s0) in listOf(letters, reverseComplement().letters).withIndex()) {
             val s = if (isRna) s0.replace('U', 'T') else s0
-            val text = if (circular) s + s else s
-            for (offset in 0..2) {
-                var start = -1
-                var i = offset
-                while (i + 3 <= text.length) {
-                    val codon = text.subSequence(i, i + 3)
-                    if (start < 0) {
-                        if (codon == "ATG") start = i
-                    } else if (gc.isStop(codon)) {
-                        val len = i + 3 - start
-                        if (!circular || (start < n && len <= n)) {
-                            val key = si.toLong() * (n.toLong() + 1) + ((i + 2) % n)
-                            val prev = best[key]
-                            if (prev == null || prev.text.length < len) best[key] = Orf(si, start % n, (i + 2) % n, text.substring(start, i + 3))
-                        }
-                        start = -1
+            val ring = if (circular) s + s.substring(0, 2) else s
+            fun codon(i: Int): CharSequence? = if (i + 3 <= ring.length) ring.subSequence(i, i + 3) else null
+            val stop = BooleanArray(n) { i -> codon(i)?.let { gc.isStop(it) } ?: false }
+            // toStop[i]: nucleotides from i to the first in-frame stop codon at or after i, or -1.
+            val toStop = IntArray(n) { -1 }
+            if (circular) {
+                // i -> i + 3 (mod n) runs around one cycle, or three when 3 divides n.
+                val seen = BooleanArray(n)
+                for (first in 0 until n) {
+                    if (seen[first]) continue
+                    val cycle = ArrayList<Int>()
+                    var i = first
+                    while (!seen[i]) { seen[i] = true; cycle.add(i); i = (i + 3) % n }
+                    val anchor = cycle.indexOfFirst { stop[it] }
+                    if (anchor < 0) continue
+                    for (t in 0 until cycle.size) {
+                        val j = Math.floorMod(anchor - t, cycle.size)
+                        val pos = cycle[j]
+                        toStop[pos] = if (stop[pos]) 0 else toStop[cycle[(j + 1) % cycle.size]] + 3
                     }
-                    i += 3
                 }
+            } else {
+                for (i in n - 1 downTo 0) toStop[i] = if (stop[i]) 0 else if (i + 3 < n && toStop[i + 3] >= 0) toStop[i + 3] + 3 else -1
+            }
+            val doubled = if (circular) s + s else s
+            for (i in 0 until n) {
+                if (toStop[i] < 0 || codon(i)?.toString() != "ATG") continue
+                val len = toStop[i] + 3
+                if (circular && len > n) continue
+                val key = si.toLong() * (n.toLong() + 1) + (i + toStop[i]) % n
+                val prev = best[key]
+                if (prev == null || prev.text.length < len) best[key] = Orf(si, i, doubled.substring(i, i + len))
             }
         }
         return best.values.filter { it.text.length >= minLength }
@@ -276,15 +300,23 @@ public class DNA(letters: String, ds: Boolean = false, circular: Boolean = false
 
     /**
      * The melting temperature in °C with the complement, as IDT's OligoAnalyzer
-     * computes it (see [Melting]): [na] monovalent cations (default 50mM), [mg]
-     * Mg2+ (0), [dntp] dNTPs (0), [oligo] the oligo (250nM). Each is a
-     * concentration quantity or a number in mol/L. Plain A, C, G and T only.
+     * computes it (see [Melting]): [na] monovalent cations (default 50mM), [oligo]
+     * the oligo (250nM), [mg] Mg2+ (0), [dntp] dNTPs (0); the order RevGrid's
+     * `tm(dna, salt, oligo)` always had, with the buffer's Mg2+ and dNTPs after.
+     * Each is a concentration quantity or a number in mol/L. Plain A, C, G and T only.
      */
-    public fun tm(na: Any? = null, mg: Any? = null, dntp: Any? = null, oligo: Any? = null): Quantity<Temperature> {
+    public fun tm(na: Any? = null, oligo: Any? = null, mg: Any? = null, dntp: Any? = null): Quantity<Temperature> {
         if (circular) throw BioException("A melting temperature is for a linear oligo, not a circular sequence")
         if (letters.length < 2) throw BioException("A melting temperature needs at least 2 nt")
         letters.firstOrNull { it !in "ACGT" }?.let { throw BioException("A melting temperature needs plain A, C, G and T; this has '$it'") }
-        val celsius = Melting.tm(letters, molar(na, 0.05, "Na+"), molar(mg, 0.0, "Mg2+"), molar(dntp, 0.0, "dNTP"), molar(oligo, 250e-9, "oligo"))
+        val naM = molar(na, 0.05, "Na+")
+        val oligoM = molar(oligo, 250e-9, "The oligo concentration")
+        val mgM = molar(mg, 0.0, "Mg2+")
+        val dntpM = molar(dntp, 0.0, "dNTP")
+        if (oligoM == 0.0) throw BioException("The oligo concentration must be more than 0")
+        if (naM == 0.0 && mgM == 0.0) throw BioException("A melting temperature needs Na+ or Mg2+ above 0")
+        val celsius = Melting.tm(letters, naM, mgM, dntpM, oligoM)
+        if (!celsius.isFinite()) throw BioException("No melting temperature for these conditions (Na+ $na, oligo $oligo, Mg2+ $mg, dNTPs $dntp)")
         return Quantity(BigDecimal(celsius.toString()), KiUnit.dC)
     }
 
@@ -301,7 +333,7 @@ public class DNA(letters: String, ds: Boolean = false, circular: Boolean = false
                 is Number -> x.toDouble()
                 else -> throw BioException("$what is a concentration such as 50mM, not ${x::class.simpleName}")
             }
-            if (v.isNaN() || v < 0) throw BioException("$what cannot be $x")
+            if (!v.isFinite() || v < 0) throw BioException("$what cannot be $x")
             return v
         }
     }

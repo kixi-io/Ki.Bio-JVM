@@ -62,6 +62,7 @@ internal object Packing {
         val flags = (head ushr 2) and 3
         val packing = (head ushr 4) and 3
         require(head ushr 6 == 0) { "Unknown bits in a stored sequence's head" }
+        require(kind <= 2) { "A stored sequence of unknown kind $kind" }
         require(kind == expectedKind) { "A stored sequence of kind $kind where kind $expectedKind was expected" }
         require(if (kind == 2) packing == RESIDUES && flags == 0 else packing == PLAIN || packing == IUPAC) { "A stored sequence's packing does not suit its kind" }
         var pos = 1

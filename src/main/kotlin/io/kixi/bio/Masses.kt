@@ -54,6 +54,7 @@ internal object Masses {
     /** A protein: null when a letter has no formula (B Z J X) or a stop is inside it. A final stop is ignored. */
     fun protein(letters: String): IntArray? {
         val body = letters.removeSuffix("*")
+        if (body.isEmpty()) return null                                  // a stop alone has no residues
         val sum = IntArray(SYMBOLS.size)
         for (ch in body) add(sum, PROTEIN[ch] ?: return null)
         sum[1] += 2; sum[3] += 1                                        // plus H2O

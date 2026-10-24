@@ -14,7 +14,8 @@ public class GeneticCode internal constructor(
 ) {
     /**
      * The amino acid a codon reads as (`*` for a stop). An ambiguous codon (`GGN`)
-     * reads as the amino acid every codon it stands for agrees on, else `X`.
+     * reads as the amino acid every codon it stands for agrees on; when they read
+     * as D or N it is `B`, E or Q `Z`, I or L `J` (as Biopython reads them); else `X`.
      * T and U are the same.
      */
     public fun translate(codon: CharSequence): Char {
@@ -23,14 +24,17 @@ public class GeneticCode internal constructor(
         if (i >= 0) return aminoAcids[i]
         val m0 = Letters.mask(codon[0]); val m1 = Letters.mask(codon[1]); val m2 = Letters.mask(codon[2])
         if (m0 == 0 || m1 == 0 || m2 == 0) return 'X'
-        var found = 0.toChar()
+        val read = HashSet<Char>()
         for (a in 0..3) if ((m0 shr BASE_BITS[a]) and 1 == 1)
             for (b in 0..3) if ((m1 shr BASE_BITS[b]) and 1 == 1)
-                for (c in 0..3) if ((m2 shr BASE_BITS[c]) and 1 == 1) {
-                    val aa = aminoAcids[a * 16 + b * 4 + c]
-                    if (found == 0.toChar()) found = aa else if (found != aa) return 'X'
-                }
-        return found
+                for (c in 0..3) if ((m2 shr BASE_BITS[c]) and 1 == 1) read.add(aminoAcids[a * 16 + b * 4 + c])
+        return when {
+            read.size == 1 -> read.first()
+            read.all { it == 'D' || it == 'N' } -> 'B'
+            read.all { it == 'E' || it == 'Q' } -> 'Z'
+            read.all { it == 'I' || it == 'L' } -> 'J'
+            else -> 'X'
+        }
     }
 
     /** True when [codon] (plain bases) is a stop codon of this code. */

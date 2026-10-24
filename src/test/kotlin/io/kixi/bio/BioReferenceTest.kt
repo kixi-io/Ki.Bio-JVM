@@ -27,8 +27,8 @@ class BioReferenceTest : FunSpec({
         for (r in rows.filter { it[0] == "tm" }) {
             val (seq, na, mg, dntp, oligo) = r.subList(1, 6)
             val want = r[6].toDouble()
-            val got = DNA(seq).tm(Quantity(BigDecimal(na), KiUnit.mM), Quantity(BigDecimal(mg), KiUnit.mM),
-                Quantity(BigDecimal(dntp), KiUnit.mM), Quantity(BigDecimal(oligo), KiUnit.nM)).value.toDouble()
+            val got = DNA(seq).tm(Quantity(BigDecimal(na), KiUnit.mM), Quantity(BigDecimal(oligo), KiUnit.nM),
+                Quantity(BigDecimal(mg), KiUnit.mM), Quantity(BigDecimal(dntp), KiUnit.mM)).value.toDouble()
             n++
             if (abs(got - want) > 0.001) bad.add("$seq Na $na Mg $mg dNTP $dntp oligo $oligo: $got, Biopython $want")
         }

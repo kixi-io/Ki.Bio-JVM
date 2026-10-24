@@ -41,7 +41,7 @@ public class BioBag : TypeBag {
             BagFunction("revcomp", 1..1, "Sequence") { a -> nucleicOf(a[0], "revcomp").reverseComplement() },
             BagFunction("transcribe", 1..1, "RNA") { a -> dnaOf(a[0]).transcribe() },
             BagFunction("translate", 1..3, "Protein") { a -> nucleicOf(a[0], "translate").translate(frameArg(a.getOrNull(1)), a.getOrNull(2)) },
-            BagFunction("gc", 1..1, "Double") { a -> nucleicOf(a[0], "gc").gc },
+            BagFunction("gc", 1..1, "Double") { a -> nucleicOf(a[0], "gc").gc },   // nil when no base is known to be G/C or A/T
             BagFunction("tm", 1..5, "Quantity") { a -> dnaOf(a[0]).tm(a.getOrNull(1), a.getOrNull(2), a.getOrNull(3), a.getOrNull(4)) },
             BagFunction("pI", 1..1, "Double") { a -> proteinOf(a[0]).pI },
             BagFunction("a260", 2..2, "Double") { a -> a260(a[0], a[1]) },
@@ -196,7 +196,12 @@ private class LiteralParts(literal: String, allowFlags: Boolean, what: String) {
         }
         this.ds = ds
         this.circular = circular
+        val quoted = rest.trimStart().startsWith('"')
         text = TypeBags.stringOrToken(rest)
+        // The literal is strict (design 5.5): letters only, so `.dna("ds AC")` is not the
+        // sequence DSAC and `.dna(ds)` is not DS. The functions (dna, seq) read looser text.
+        if (text.any { it.isWhitespace() }) throw ParseException("A .${what.lowercase()} literal is letters only, without spaces: $literal")
+        if (!quoted && (text == "ds" || text == "circular")) throw ParseException("A .${what.lowercase()} literal needs its letters after '$text': $literal")
     }
 
     private companion object { val FLAG = Regex("""^\s*(ds|circular)\s+""") }

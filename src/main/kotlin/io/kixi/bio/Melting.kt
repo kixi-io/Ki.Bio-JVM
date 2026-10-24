@@ -71,9 +71,10 @@ internal object Melting {
 
     /**
      * How the oligo concentration enters ln k for a non-self-complementary oligo:
-     * 1 when the complement is much less concentrated (a primer on its target).
-     * IDT does not state its convention; this is checked against values read from
-     * OligoAnalyzer (see the tests).
+     * k is the oligo's concentration, because IDT's OligoAnalyzer assumes the oligo
+     * is at least 6 times as concentrated as its target (its "Definitions" page,
+     * which also gives the effective value to enter when it is not: ([s1] - [s2]) / 2,
+     * or ([s1] + [s2]) / 4 for equal strands). LabNexus's lab kit used [oligo] / 4.
      */
     internal const val OLIGO_FACTOR: Double = 1.0
 
