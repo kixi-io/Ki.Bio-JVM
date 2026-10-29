@@ -9,17 +9,20 @@ import io.kixi.types.ValueType
 import kotlin.reflect.KClass
 
 /**
- * The `bio` type bag: DNA, RNA and protein sequences for KD, KS, KQ and RevDB (Ki
- * type bags design, 5.5 and 11).
+ * The `bio` type bag: sequences for KD, KS, KQ and RevDB (Ki type bags design,
+ * 5.5 and 11).
  *
- * - `DNA` `.dna("GAATTC")`, `.dna(ds circular "…")`; `RNA` `.rna("AUG")`; `Protein`
- *   `.protein("MKT")`; `Sequence`, any of the three, for schemas and `is`.
- * - Functions `dna`, `rna`, `protein`, `seq`, `revcomp`, `transcribe`, `translate`,
- *   `gc`, `tm`, `pI`, `a260`, `hamming`, `levenshtein`.
+ * - `DNA` `.dna(GAATTC)`, `.dna(ds circular …)`; `RNA` `.rna(AUG)`; `Protein`
+ *   `.protein(MKT)`; the synthetic backbones `TNA` `.tna(ATGC)`, `LNA`
+ *   `.lna(ATGC)` and `PNA` `.pna(ATGC)`; `Sequence`, any of them, for schemas
+ *   and `is`. The letters may be written bare or quoted.
+ * - Functions `dna`, `rna`, `protein`, `tna`, `lna`, `pna`, `seq`, `revcomp`,
+ *   `transcribe`, `translate`, `gc`, `tm`, `pI`, `a260`, `hamming`,
+ *   `levenshtein`.
  *
  * The bag is found on the classpath through `META-INF/services`. It depends on
  * Ki.Sci for formulas and masses. Its Kotlin API is [DNA], [RNA], [Protein],
- * [BioSequence] and [GeneticCodes].
+ * [TNA], [LNA], [PNA], [BioSequence] and [GeneticCodes].
  */
 public class BioBag : TypeBag {
     override val name: String get() = NAME
@@ -29,16 +32,26 @@ public class BioBag : TypeBag {
 
     public companion object {
         public const val NAME: String = "bio"
-        public const val VERSION: Int = 1
 
-        private val TYPES: List<ValueType<*>> = listOf(SequenceType, DNAType, RNAType, ProteinType)
+        /**
+         * 2 since the synthetic backbones were added (2026-10-29): the stored head
+         * byte's kind widened into a bit version 1 reserved, so every value
+         * version 1 wrote reads back unchanged and no index is rebuilt ([Packing]).
+         */
+        public const val VERSION: Int = 2
+
+        private val TYPES: List<ValueType<*>> =
+            listOf(SequenceType, DNAType, RNAType, ProteinType, TNAType, LNAType, PNAType)
 
         private val FUNCTIONS: List<BagFunction> = listOf(
             BagFunction("dna", 1..1, "DNA") { a -> dnaOf(a[0]) },
             BagFunction("rna", 1..1, "RNA") { a -> rnaOf(a[0]) },
             BagFunction("protein", 1..1, "Protein") { a -> proteinOf(a[0]) },
+            BagFunction("tna", 1..1, "TNA") { a -> tnaOf(a[0]) },
+            BagFunction("lna", 1..1, "LNA") { a -> lnaOf(a[0]) },
+            BagFunction("pna", 1..1, "PNA") { a -> pnaOf(a[0]) },
             BagFunction("seq", 1..2, "Sequence") { a -> seqOf(a[0], a.getOrNull(1)) },
-            BagFunction("revcomp", 1..1, "Sequence") { a -> nucleicOf(a[0], "revcomp").reverseComplement() },
+            BagFunction("revcomp", 1..1, "Sequence") { a -> revcompOf(a[0]) },
             BagFunction("transcribe", 1..1, "RNA") { a -> dnaOf(a[0]).transcribe() },
             BagFunction("translate", 1..3, "Protein") { a -> nucleicOf(a[0], "translate").translate(frameArg(a.getOrNull(1)), a.getOrNull(2)) },
             BagFunction("gc", 1..1, "Double") { a -> nucleicOf(a[0], "gc").gc },   // nil when no base is known to be G/C or A/T
@@ -76,6 +89,35 @@ public class BioBag : TypeBag {
         }
 
         /**
+         * TNA from text or TNA. A sequence of another kind is not converted: the
+         * letters say nothing about the backbone, so turning a DNA into a TNA is
+         * a claim about the molecule that only the caller can make, by writing
+         * `tna(d.text)`.
+         */
+        @JvmStatic
+        public fun tnaOf(x: Any?): TNA = when (x) {
+            is TNA -> x
+            is CharSequence -> TNA(Letters.clean(x.toString()))
+            else -> throw BioException("Expected TNA, got ${name(x)}")
+        }
+
+        /** LNA from text or LNA; see [tnaOf] on why another kind is not converted. */
+        @JvmStatic
+        public fun lnaOf(x: Any?): LNA = when (x) {
+            is LNA -> x
+            is CharSequence -> LNA(Letters.clean(x.toString()))
+            else -> throw BioException("Expected LNA, got ${name(x)}")
+        }
+
+        /** A PNA from text or a PNA; see [tnaOf] on why another kind is not converted. */
+        @JvmStatic
+        public fun pnaOf(x: Any?): PNA = when (x) {
+            is PNA -> x
+            is CharSequence -> PNA(Letters.clean(x.toString()))
+            else -> throw BioException("Expected a PNA, got ${name(x)}")
+        }
+
+        /**
          * A sequence from text, its kind detected unless [kind] names one (`dna`,
          * `dsdna`, `rna`, `dsrna`, `protein`; also `ssdna`, `peptide`, `aa`), or a
          * sequence (read as [kind] when one is given).
@@ -99,15 +141,38 @@ public class BioBag : TypeBag {
                 "rna", "ssrna" -> RNA(letters)
                 "dsrna" -> RNA(letters, ds = true)
                 "protein", "peptide", "aa", "amino" -> Protein(letters)
-                else -> throw BioException("Unknown sequence kind '$kind' (dna, dsdna, rna, dsrna, protein)")
+                "tna" -> TNA(letters)
+                "dstna" -> TNA(letters, ds = true)
+                "lna" -> LNA(letters)
+                "dslna" -> LNA(letters, ds = true)
+                "pna" -> PNA(letters)
+                else -> throw BioException(
+                    "Unknown sequence kind '$kind' (dna, dsdna, rna, dsrna, protein, tna, lna, pna)"
+                )
             }
         }
 
-        /** DNA or RNA from a sequence or text; [what] names the operation in errors. */
+        /**
+         * A nucleic acid from a sequence or text; [what] names the operation in
+         * errors. TNA and LNA are nucleic acids; a PNA is not (its backbone is a
+         * peptide), so an operation that accepts one says so itself.
+         */
         @JvmStatic
         public fun nucleicOf(x: Any?, what: String): NucleicAcid = when (val s = seqOf(x)) {
             is NucleicAcid -> s
-            else -> throw BioException("$what is for DNA and RNA, not a protein")
+            else -> throw BioException("$what is for DNA, RNA, TNA and LNA, not ${Letters.article(s.kind)} ${Letters.prose(s.kind)}")
+        }
+
+        /**
+         * The other strand of a nucleic acid or a PNA, read the other way. A PNA
+         * is included because a PNA probe is written against its target like any
+         * other oligo, its N terminus where a 5' end would be.
+         */
+        @JvmStatic
+        public fun revcompOf(x: Any?): BioSequence = when (val s = seqOf(x)) {
+            is NucleicAcid -> s.reverseComplement()
+            is PNA -> s.reverseComplement()
+            else -> throw BioException("revcomp is for a nucleic acid or a PNA, not ${Letters.article(s.kind)} ${Letters.prose(s.kind)}")
         }
 
         /**
@@ -187,7 +252,7 @@ private class LiteralParts(literal: String, allowFlags: Boolean, what: String) {
         while (true) {
             val m = FLAG.find(rest) ?: break
             val word = m.groupValues[1]
-            if (!allowFlags) throw ParseException("A $what has no '$word'")
+            if (!allowFlags) throw ParseException("${Letters.article(what).replaceFirstChar { it.uppercase() }} $what has no '$word'")
             when (word) {
                 "ds" -> { if (ds) throw ParseException("'ds' twice in $literal"); ds = true }
                 "circular" -> { if (circular) throw ParseException("'circular' twice in $literal"); circular = true }
@@ -210,9 +275,16 @@ private class LiteralParts(literal: String, allowFlags: Boolean, what: String) {
 /** Reads a literal, turning Ki.Bio's exceptions into Ki.Core's ParseException. */
 private inline fun <T> readLiteral(read: () -> T): T = try { read() } catch (e: BioException) { throw ParseException(e.message) }
 
+/**
+ * A sequence literal with its letters bare: `.dna(GAATTC)`, `.dna(ds circular
+ * ATGC)`. Quoting is never needed, because letters are uppercase and the two flag
+ * words are lowercase, so a bare `.dna(DS)` is the two-letter IUPAC sequence D S
+ * and reads back as itself. Quoted letters still parse, for anything already
+ * written that way.
+ */
 private fun nucleicLiteral(name: String, s: NucleicAcid): String {
     val flags = (if (s.ds) "ds " else "") + (if (s.circular) "circular " else "")
-    return ".$name($flags\"${s.letters}\")"
+    return ".$name($flags${s.letters})"
 }
 
 // Members shared by the four types, typed for each.
@@ -244,29 +316,33 @@ private fun <T : NucleicAcid> nucleic(): List<Member<T>> = common<T>() + listOf(
     Member("orf", 0..1, "Sequence") { s, a -> s.orf(a.getOrNull(0)) },
 )
 
-/** `Sequence`: any DNA, RNA or protein, for schemas (`type=Sequence`) and `is`. It has no literal of its own. */
+/** `Sequence`: a sequence of any kind, for schemas (`type=Sequence`) and `is`. It has no literal of its own. */
 public object SequenceType : ValueType<BioSequence> {
     override val name: String = "Sequence"
     override val kotlinClass: KClass<BioSequence> = BioSequence::class
     override val literals: List<String> = emptyList()
-    override fun parse(literal: String): BioSequence = throw ParseException("Sequence has no literal; write .dna(…), .rna(…) or .protein(…)")
+    override fun parse(literal: String): BioSequence =
+        throw ParseException("Sequence has no literal; write .dna(…), .rna(…), .protein(…), .tna(…), .lna(…) or .pna(…)")
     override fun format(value: BioSequence): String = when (value) {
         is DNA -> DNAType.format(value)
         is RNA -> RNAType.format(value)
         is Protein -> ProteinType.format(value)
+        is TNA -> TNAType.format(value)
+        is LNA -> LNAType.format(value)
+        is PNA -> PNAType.format(value)
     }
     override fun encode(value: BioSequence): ByteArray = Packing.encode(value)
-    override fun decode(bytes: ByteArray, version: Int): BioSequence = Packing.decode(bytes, bytes.firstOrNull()?.toInt()?.and(3) ?: -1)
+    override fun decode(bytes: ByteArray, version: Int): BioSequence = Packing.decode(bytes, Packing.kindIn(bytes))
     /**
-     * Every member of DNA, RNA and protein, so a query over an attribute typed
-     * `Sequence` checks against what any of them has (`c.insert.translate(1)`
-     * where `c.insert.kind == "DNA"`). A value answers with its own type's members
-     * when the query runs; this list is for the checker, and when used it hands
-     * the call to the value's type.
+     * Every member of every kind, so a query over an attribute typed `Sequence`
+     * checks against what any of them has (`c.insert.translate(1)` where
+     * `c.insert.kind == "DNA"`). A value answers with its own type's members when
+     * the query runs; this list is for the checker, and when used it hands the
+     * call to the value's type.
      */
     override val members: List<Member<BioSequence>> by lazy {
         val seen = LinkedHashMap<String, Member<*>>()
-        for (t in listOf(DNAType, RNAType, ProteinType)) for (m in t.members) seen.putIfAbsent(m.name, m)
+        for (t in listOf(DNAType, RNAType, ProteinType, TNAType, LNAType, PNAType)) for (m in t.members) seen.putIfAbsent(m.name, m)
         seen.values.map { m ->
             Member<BioSequence>(m.name, m.arity, m.resultType) { s, a ->
                 val own = TypeBags.member(s, m.name) ?: throw BioException("A ${s.kind} has no ${m.name}")
@@ -331,6 +407,7 @@ public object ProteinType : ValueType<Protein> {
     override val kotlinClass: KClass<Protein> = Protein::class
     override val literals: List<String> = listOf("protein")
     override fun parse(literal: String): Protein = readLiteral { Protein(LiteralParts(literal, false, "protein").text) }
+    /** Quoted, unlike the nucleotide kinds: a protein's letters may include `*` for a stop, which is no bare token. */
     override fun format(value: Protein): String = ".protein(\"${value.letters}\")"
     override fun encode(value: Protein): ByteArray = Packing.encode(value)
     override fun decode(bytes: ByteArray, version: Int): Protein = Packing.decode(bytes, 2) as Protein
@@ -347,6 +424,79 @@ public object ProteinType : ValueType<Protein> {
     override val samples: List<Protein> by lazy {
         listOf(Protein("M"), Protein("MKTAYIAKQRQISFVKSHFSRQ"), Protein(Letters.PROTEIN), Protein("MKV*"), Protein("MQIFVKTLTGKTITLEVEPSDTIENVKAKIQDKEGIPPDQQRLIFAGKQLEDGRTLSDYNIQKESTLHLVLRLRGG"),
             Protein("PEPTIDE"), Protein("CCWWYY"))
+    }
+}
+
+/**
+ * `TNA`, `.tna(ATGC)`, `.tna(ds circular …)`. Orders by its letters, apart from
+ * DNA's values: RevDB writes the type name ahead of the key.
+ */
+public object TNAType : ValueType<TNA> {
+    override val name: String = "TNA"
+    override val kotlinClass: KClass<TNA> = TNA::class
+    override val literals: List<String> = listOf("tna")
+    override fun parse(literal: String): TNA = readLiteral { LiteralParts(literal, true, "TNA").let { TNA(it.text, it.ds, it.circular) } }
+    override fun format(value: TNA): String = nucleicLiteral("tna", value)
+    override fun encode(value: TNA): ByteArray = Packing.encode(value)
+    override fun decode(bytes: ByteArray, version: Int): TNA = Packing.decode(bytes, 3) as TNA
+    override val ordered: Boolean = true
+    override fun sortKey(value: TNA): ByteArray = Packing.sortKey(value)
+
+    /** DNA's members without `tm` (no model fits a threose backbone) or `transcribe`. */
+    override val members: List<Member<TNA>> = nucleic<TNA>()
+
+    override val samples: List<TNA> by lazy {
+        listOf(
+            TNA("A"), TNA("ACGT"), TNA("ATGCGTACGTTA"), TNA("GAATTC", ds = true), TNA("ACGTRYSWKMBDHVN"),
+            TNA("ATGAAACCCGGGTTTTAA", circular = true), TNA("ACGT", ds = true, circular = true), TNA(SAMPLE_313),
+        )
+    }
+}
+
+/** `LNA`, `.lna(ATGC)`. A whole strand of LNA; mixed positions are a v1.1 item ([LNA]). */
+public object LNAType : ValueType<LNA> {
+    override val name: String = "LNA"
+    override val kotlinClass: KClass<LNA> = LNA::class
+    override val literals: List<String> = listOf("lna")
+    override fun parse(literal: String): LNA = readLiteral { LiteralParts(literal, true, "LNA").let { LNA(it.text, it.ds, it.circular) } }
+    override fun format(value: LNA): String = nucleicLiteral("lna", value)
+    override fun encode(value: LNA): ByteArray = Packing.encode(value)
+    override fun decode(bytes: ByteArray, version: Int): LNA = Packing.decode(bytes, 5) as LNA
+    override val ordered: Boolean = true
+    override fun sortKey(value: LNA): ByteArray = Packing.sortKey(value)
+
+    /** DNA's members without `tm` (the Tm an LNA position adds is the thing no model here computes) or `transcribe`. */
+    override val members: List<Member<LNA>> = nucleic<LNA>()
+
+    override val samples: List<LNA> by lazy {
+        listOf(
+            LNA("A"), LNA("ACGT"), LNA("GCATGC"), LNA("CTGATC", ds = true), LNA("ACGTRYSWKMBDHVN"),
+            LNA("ATGAAACCCGGGTTTTAA", circular = true),
+        )
+    }
+}
+
+/** `PNA`, `.pna(ATGC)`. One strand always, so no `ds` or `circular` ([PNA]). */
+public object PNAType : ValueType<PNA> {
+    override val name: String = "PNA"
+    override val kotlinClass: KClass<PNA> = PNA::class
+    override val literals: List<String> = listOf("pna")
+    override fun parse(literal: String): PNA = readLiteral { PNA(LiteralParts(literal, false, "PNA").text) }
+    override fun format(value: PNA): String = ".pna(${value.letters})"
+    override fun encode(value: PNA): ByteArray = Packing.encode(value)
+    override fun decode(bytes: ByteArray, version: Int): PNA = Packing.decode(bytes, 4) as PNA
+    override val ordered: Boolean = true
+    override fun sortKey(value: PNA): ByteArray = Packing.sortKey(value)
+
+    /** The shared members plus what holds for a peptide backbone: no `ds`, `circular`, `tm` or reading frames. */
+    override val members: List<Member<PNA>> = common<PNA>() + listOf(
+        Member("gc", null, "Double") { s, _ -> s.gc },
+        Member("complement", 0..0, "PNA") { s, _ -> s.complement() },
+        Member("reverseComplement", 0..0, "PNA") { s, _ -> s.reverseComplement() },
+    )
+
+    override val samples: List<PNA> by lazy {
+        listOf(PNA("A"), PNA("ACGT"), PNA("CATTGC"), PNA("ACGTRYSWKMBDHVN"), PNA("GTAAAACGACGGCCAGT"))
     }
 }
 

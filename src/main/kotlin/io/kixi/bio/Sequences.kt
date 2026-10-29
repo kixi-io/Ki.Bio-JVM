@@ -11,8 +11,14 @@ import java.util.Base64
 import io.kixi.uom.Unit as KiUnit
 
 /**
- * A DNA, RNA or protein sequence (Ki type bags design, 5.5): its letters, kept as
- * written and uppercased. The schema and KS type `Sequence` is any of the three.
+ * A sequence (Ki type bags design, 5.5): its letters, kept as written and
+ * uppercased. The schema and KS type `Sequence` is any kind of sequence.
+ *
+ * The natural kinds are [DNA], [RNA] and [Protein]. The synthetic ones are [TNA]
+ * (a threose backbone), [LNA] (ribose locked by a 2'-O,4'-C bridge) and [PNA] (a
+ * peptide backbone), which carry DNA's letters but are different molecules, so
+ * each is its own type rather than a flag on DNA: a mass or a melting temperature
+ * that does not hold for them is refused rather than guessed.
  *
  * Positions are 1-based, as in GenBank and every lab tool.
  */
@@ -21,7 +27,7 @@ public sealed class BioSequence(letters: String) {
     /** The letters, uppercase. */
     public val letters: String = letters
 
-    /** `DNA`, `RNA` or `Protein`. */
+    /** `DNA`, `RNA`, `Protein`, `TNA`, `LNA` or `PNA`. */
     public abstract val kind: String
 
     /** Residues: nucleotides, base pairs or amino acids. */
@@ -153,19 +159,20 @@ public sealed class NucleicAcid(letters: String, public val ds: Boolean, final o
 
     override fun withLetters(letters: String, circular: Boolean): BioSequence = with(letters, circular = circular)
 
-    internal abstract val isRna: Boolean
+    /** The sugar and linkage the bases hang from, which picks the residue table for [formula]. */
+    internal abstract val backbone: Backbone
+
+    /** True for RNA alone: the kind that reads and writes U where the others read T. */
+    internal val isRna: Boolean get() = backbone == Backbone.RNA
 
     /**
-     * G + C as a percentage of the bases that are known to be one or the other
-     * (G, C and S against A, T, U and W; N, R, Y and the other codes are left out,
-     * as Biopython's `gc_fraction` does by default), unrounded; null when there are
-     * none.
+     * False when [formula] comes from a derived residue table rather than a checked
+     * reference, which warns once per kind ([Masses.warnUnverified]).
      */
-    public val gc: Double? get() {
-        val strong = letters.count { it == 'G' || it == 'C' || it == 'S' }
-        val weak = letters.count { it == 'A' || it == 'T' || it == 'U' || it == 'W' }
-        return if (strong + weak == 0) null else strong * 100.0 / (strong + weak)
-    }
+    internal open val massVerified: Boolean get() = true
+
+    /** G + C as a percentage of the bases known to be one or the other ([Letters.gc]). */
+    public val gc: Double? get() = Letters.gc(letters)
 
     /** The complementary strand, same direction; IUPAC codes complement too (R and Y, ...). */
     public fun complement(): NucleicAcid = with(complementLetters(letters))
@@ -271,8 +278,9 @@ public sealed class NucleicAcid(letters: String, public val ds: Boolean, final o
     }
 
     override val formula: Formula? by lazy {
-        val top = Masses.strand(letters, isRna, circular) ?: return@lazy null
-        val counts = if (ds) Masses.plus(top, Masses.strand(reverseComplement().letters, isRna, circular) ?: return@lazy null) else top
+        if (!massVerified) Masses.warnUnverified(kind)
+        val top = Masses.strand(letters, backbone, circular) ?: return@lazy null
+        val counts = if (ds) Masses.plus(top, Masses.strand(reverseComplement().letters, backbone, circular) ?: return@lazy null) else top
         Masses.formula(counts)
     }
 
@@ -292,7 +300,7 @@ public class DNA(letters: String, ds: Boolean = false, circular: Boolean = false
     NucleicAcid(Letters.letters(letters, Letters.DNA, "DNA"), ds, circular) {
 
     override val kind: String get() = "DNA"
-    override val isRna: Boolean get() = false
+    override val backbone: Backbone get() = Backbone.DNA
     override fun with(letters: String, ds: Boolean, circular: Boolean): DNA = DNA(letters, ds, circular)
 
     /** The RNA this DNA is transcribed into: T becomes U. */
@@ -344,11 +352,100 @@ public class RNA(letters: String, ds: Boolean = false, circular: Boolean = false
     NucleicAcid(Letters.letters(letters, Letters.RNA, "RNA"), ds, circular) {
 
     override val kind: String get() = "RNA"
-    override val isRna: Boolean get() = true
+    override val backbone: Backbone get() = Backbone.RNA
     override fun with(letters: String, ds: Boolean, circular: Boolean): RNA = RNA(letters, ds, circular)
 
     /** The DNA this RNA is reverse transcribed into (the same strand, U becomes T). */
     public fun reverseTranscribe(): DNA = DNA(letters.replace('U', 'T'), ds, circular)
+}
+
+/**
+ * TNA: `.tna("ATGC")`, `.tna(ds "…")`, `.tna(ds circular "…")`. Letters: A C G T and
+ * the IUPAC codes, as DNA's.
+ *
+ * Threose nucleic acid carries DNA's four bases on α-L-threofuranose, linked
+ * 3'-2' instead of 5'-3'. It pairs with DNA and RNA, which is why it is used for
+ * nuclease-resistant aptamers and XNA enzymes, but it is not DNA: its mass differs
+ * and no published nearest-neighbour model fits it, so [mass] is derived (and
+ * warns once) and there is no melting temperature.
+ */
+public class TNA(letters: String, ds: Boolean = false, circular: Boolean = false) :
+    NucleicAcid(Letters.letters(letters, Letters.DNA, "TNA"), ds, circular) {
+
+    override val kind: String get() = "TNA"
+    override val backbone: Backbone get() = Backbone.TNA
+    override val massVerified: Boolean get() = false
+    override fun with(letters: String, ds: Boolean, circular: Boolean): TNA = TNA(letters, ds, circular)
+}
+
+/**
+ * LNA: `.lna("ATGC")`, `.lna(ds "…")`. Letters: A C G T and the IUPAC codes.
+ *
+ * A locked nucleic acid is ribose closed by a 2'-O,4'-C methylene bridge, which
+ * holds the sugar in one conformation and raises the affinity for a complementary
+ * strand sharply.
+ *
+ * **This type is a whole strand of LNA.** In practice LNA is nearly always a few
+ * locked positions inside an otherwise DNA or RNA oligo, written `+A` by IDT, and
+ * that mixed form needs a modification per position rather than a type: it is a
+ * v1.1 item (Ki type bags design, 5.5). An all-LNA oligo is a real molecule, so
+ * this type is honest as far as it goes. There is no melting temperature, because
+ * the whole point of an LNA position is the Tm it adds and no model here computes
+ * it; [mass] is derived and warns once.
+ */
+public class LNA(letters: String, ds: Boolean = false, circular: Boolean = false) :
+    NucleicAcid(Letters.letters(letters, Letters.DNA, "LNA"), ds, circular) {
+
+    override val kind: String get() = "LNA"
+    override val backbone: Backbone get() = Backbone.LNA
+    override val massVerified: Boolean get() = false
+    override fun with(letters: String, ds: Boolean, circular: Boolean): LNA = LNA(letters, ds, circular)
+}
+
+/**
+ * PNA: `.pna("ATGC")`. Letters: A C G T and the IUPAC codes.
+ *
+ * A peptide nucleic acid carries the four bases on an N-(2-aminoethyl)glycine
+ * backbone, so it is a peptide rather than a nucleic acid: uncharged, with an N
+ * and a C terminus where a strand has 5' and 3' ends, and with a duplex stability
+ * that barely depends on salt. That is why it is not a [NucleicAcid] here and has
+ * no `ds` or `circular`: a PNA probe is synthesized as a single strand, and a
+ * PNA:DNA duplex is a property of the pair, not of this value.
+ *
+ * [complement] and [reverseComplement] pair the bases as usual, the N terminus
+ * where a 5' end would be, which is the convention PNA synthesis follows. There is
+ * no melting temperature, since DNA's nearest-neighbour model and salt correction
+ * do not apply to an uncharged backbone; [mass] is derived and warns once, though
+ * its residues reproduce the values PNA mass calculators use.
+ */
+public class PNA(letters: String) : BioSequence(Letters.letters(letters, Letters.DNA, "PNA")) {
+
+    override val kind: String get() = "PNA"
+    override fun matches(s: Char, p: Char): Boolean = Letters.nucleotideMatches(s, p)
+    override val patternAlphabet: String get() = "ACGTURYSWKMBDHVN"
+    override fun withLetters(letters: String, circular: Boolean): PNA = PNA(letters)
+
+    /** G + C as a percentage of the bases known to be one or the other ([Letters.gc]). */
+    public val gc: Double? get() = Letters.gc(letters)
+
+    /** The complementary PNA, same direction; IUPAC codes complement too. */
+    public fun complement(): PNA = PNA(complementLetters(letters))
+
+    /** The complementary PNA read the other way: its N terminus against this one's. */
+    public fun reverseComplement(): PNA = PNA(complementLetters(letters).reversed())
+
+    private fun complementLetters(s: String): String {
+        val sb = StringBuilder(s.length)
+        for (ch in s) sb.append(Letters.dnaLetter(Letters.complementMask(Letters.mask(ch))))
+        return sb.toString()
+    }
+
+    override val formula: Formula? by lazy {
+        Masses.warnUnverified(kind)
+        Masses.pna(letters)?.let { Masses.formula(it) }
+    }
+
+    override fun sameMolecule(other: Any?): Boolean = other is PNA && other.letters == letters
 }
 
 /**

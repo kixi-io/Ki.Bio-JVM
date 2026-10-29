@@ -67,9 +67,35 @@ internal object Letters {
         var bad: LinkedHashSet<Char>? = null
         for (ch in letters) if (alphabet.indexOf(ch) < 0) (bad ?: LinkedHashSet<Char>().also { bad = it }).add(ch)
         bad?.let { b ->
-            throw BioException("Not a $what sequence: unexpected ${b.take(8).joinToString(", ") { "'$it'" }}${if (b.size > 8) ", ..." else ""}")
+            throw BioException("Not ${article(what)} $what sequence: unexpected ${b.take(8).joinToString(", ") { "'$it'" }}${if (b.size > 8) ", ..." else ""}")
         }
         return letters
+    }
+
+    /**
+     * `a` or `an` before a kind's name, read as it is said: an initialism goes by
+     * its first letter's sound, so it is "a DNA" and "a TNA" but "an RNA" and
+     * "an LNA".
+     */
+    /** A kind's name in prose: an initialism keeps its capitals (`DNA`), a word goes lowercase (`protein`). */
+    fun prose(kind: String): String = if (kind == kind.uppercase()) kind else kind.lowercase()
+
+    fun article(what: String): String {
+        val first = what.first()
+        val vowelSound = if (what == what.uppercase()) first in "AEFHILMNORSX" else first.lowercaseChar() in "aeiou"
+        return if (vowelSound) "an" else "a"
+    }
+
+    /**
+     * G + C as a percentage of the bases known to be one or the other (G, C and S
+     * against A, T, U and W; N, R, Y and the other codes are left out, as
+     * Biopython's `gc_fraction` does by default), unrounded; null when there are
+     * none.
+     */
+    fun gc(letters: String): Double? {
+        val strong = letters.count { it == 'G' || it == 'C' || it == 'S' }
+        val weak = letters.count { it == 'A' || it == 'T' || it == 'U' || it == 'W' }
+        return if (strong + weak == 0) null else strong * 100.0 / (strong + weak)
     }
 
     /**

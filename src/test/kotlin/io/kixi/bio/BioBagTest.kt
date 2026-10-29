@@ -37,7 +37,8 @@ class BioBagTest : FunSpec({
         t["primer"] shouldBe DNA("GTAAAACGACGGCCAGT")
         t["mrna"] shouldBe RNA("AUGGCC")
         t["p"] shouldBe Protein("MKTAY")
-        t.toString() shouldContain "insert=.dna(ds circular \"GGATCCATGAAATAA\")"
+        t.toString() shouldContain "insert=.dna(ds circular GGATCCATGAAATAA)"
+        t.toString() shouldContain "primer=.dna(GTAAAACGACGGCCAGT)"
         KD.read("t s=.dna(ds AC)")["s"] shouldBe DNA("AC", ds = true)
         shouldThrow<Exception> { KD.read("t s=.dna(\"ACGU\")") }.message!! shouldContain "'U'"
         shouldThrow<Exception> { KD.read("t s=.protein(ds \"MKT\")") }.message!! shouldContain "no 'ds'"
@@ -261,8 +262,13 @@ class BioBagTest : FunSpec({
         Packing.encode(Protein("MKTAY")).size shouldBe 1 + 1 + 4
         shouldThrow<IllegalArgumentException> { Packing.decode(Packing.encode(DNA("ACGT")).dropLast(1).toByteArray(), 0) }
         shouldThrow<IllegalArgumentException> { Packing.decode(Packing.encode(DNA("ACGT")), 1) }
-        val kind3 = Packing.encode(DNA("ACGT")).also { it[0] = (it[0].toInt() or 3).toByte() }
-        shouldThrow<IllegalArgumentException> { Packing.decode(kind3, 3) }               // what Sequence's decode passes
+        // Kind 7 is still unknown: 3 in bits 0-1 and bit 6, the kind's high bit since version 2.
+        val kind7 = Packing.encode(DNA("ACGT")).also { it[0] = (it[0].toInt() or 3 or 0x40).toByte() }
+        shouldThrow<IllegalArgumentException> { Packing.decode(kind7, 7) }               // what Sequence's decode passes
+        shouldThrow<IllegalArgumentException> { Packing.decode(kind7, 0) }
+        // Bit 7 stays reserved.
+        val bit7 = Packing.encode(DNA("ACGT")).also { it[0] = (it[0].toInt() or 0x80).toByte() }
+        shouldThrow<IllegalArgumentException> { Packing.decode(bit7, 0) }
         val padded = Packing.encode(DNA("ACG")).also { it[it.size - 1] = (it[it.size - 1].toInt() or 1).toByte() }
         shouldThrow<IllegalArgumentException> { Packing.decode(padded, 0) }
     }
